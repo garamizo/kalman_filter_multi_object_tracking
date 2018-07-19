@@ -9,7 +9,6 @@
 
 # Import python libraries
 import numpy as np
-from common import dprint
 from scipy.optimize import linear_sum_assignment
 from cv2 import KalmanFilter
 
@@ -41,17 +40,17 @@ class Track(object):
                                         [0, 1, 0, dt],
                                         [0, 0, 1, 0],
                                         [0, 0, 0, 1]]).astype(np.float32)
-        KF.processNoiseCov = (np.diag([2, 2, 20, 20]).astype(np.float32) ** 2) * dt
+        KF.processNoiseCov = (np.diag([20, 20, 150, 150]).astype(np.float32) ** 2) * dt
 
         KF.statePost = np.array([[detection[0]],
                                  [detection[1]],
                                  [0],
                                  [0]]).astype(np.float32)
-        KF.errorCovPost = np.diag([3, 3, 40, 40]).astype(np.float32) ** 2
+        KF.errorCovPost = np.diag([10, 10, 200, 200]).astype(np.float32) ** 2
 
         KF.measurementMatrix = np.array([[1, 0, 0, 0],
                                          [0, 1, 0, 0]]).astype(np.float32)
-        KF.measurementNoiseCov = (np.eye(2).astype(np.float32) * 1) ** 2
+        KF.measurementNoiseCov = (np.eye(2).astype(np.float32) * 10) ** 2
 
         KF.statePre = KF.statePost  # maybe necessary?
         KF.errorCovPre = KF.errorCovPost
@@ -119,78 +118,52 @@ class Tracker(object):
             None
         """
 
-        # Create tracks if no tracks vector found
-        if (len(self.tracks) == 0):
-            for i in range(len(detections)):
-                track = Track(detections[i], self.trackIdCount)
-                self.trackIdCount += 1
-                self.tracks.append(track)
-
         # Calculate cost using sum of square distance between
         # predicted vs detected centroids
         N = len(self.tracks)
         M = len(detections)
         cost = np.zeros(shape=(N, M))   # Cost matrix
-        for i in range(len(self.tracks)):
-            for j in range(len(detections)):
-                diff = self.tracks[i].position() - detections[j]
-                distance = np.sqrt(diff[0][0]**2 +
-                                   diff[1][0]**2)
+        for i, track in enumerate(self.tracks):
+            track.predict()  # Update KalmanFilter state
+
+            for j, detection in enumerate(detections):
+                diff = track.position() - np.array(detection).reshape(-1, 1)
+                distance = np.sqrt(diff[0]**2 + diff[1]**2)
                 cost[i][j] = distance
 
-        # Let's average the squared ERROR
-        cost = (0.5) * cost
-        # Using Hungarian Algorithm assign the correct detected measurements
-        # to predicted tracks
-        assignment = []
-        for _ in range(N):
-            assignment.append(-1)
-        row_ind, col_ind = linear_sum_assignment(cost)
-        for i in range(len(row_ind)):
-            assignment[row_ind[i]] = col_ind[i]
+        # add costs of non assignment
+        cost_non_assignment = self.dist_thresh / 2.0
+        nont = np.ones((M, M)) * cost_non_assignment
+        nond = np.ones((N, N)) * cost_non_assignment
+        nonz = np.zeros((M, N))
+        cost_aug = np.append(np.append(cost, nont, axis=0),
+                             np.append(nond, nonz, axis=0), axis=1)
 
-        # Identify tracks with no assignment, if any
-        un_assigned_tracks = []
-        for i in range(len(assignment)):
-            if (assignment[i] != -1 and cost[i][assignment[i]] > self.dist_thresh):
-                # check for cost distance threshold.
-                # If cost is very high then un_assign (delete) the track
-                assignment[i] = -1
-                un_assigned_tracks.append(i)
+        row_ind, col_ind = linear_sum_assignment(cost_aug)
 
-        # If tracks are not detected for long time, remove them
-        del_tracks = []
-        for i in range(len(self.tracks)):
-            if (self.tracks[i].position_error() > self.max_position_error):
-                del_tracks.append(i)
-
-        for id in np.flipud(del_tracks):  # only when skipped frame exceeds max
-            if id < len(self.tracks):
-                del self.tracks[id]
-                del assignment[id]
-            else:
-                dprint("ERROR: id is greater than length of tracks")
-
-        # Now look for un_assigned detects
-        un_assigned_detects = []
-        for i in range(len(detections)):
-            if i not in assignment:
-                un_assigned_detects.append(i)
+        for i, it in enumerate(row_ind):
+            if col_ind[i] < M and it < N:
+                self.tracks[it].correct(detections[col_ind[i]])
 
         # Start new tracks
+        un_assigned_detects = np.intersect1d(col_ind[row_ind >= N], range(M))
         for id in un_assigned_detects:
             track = Track(detections[id], self.trackIdCount)
             self.trackIdCount += 1
             self.tracks.append(track)
 
-        # Update KalmanFilter state, lastResults and tracks trace
-        for i in range(len(assignment)):
-            self.tracks[i].predict()
+        # Remove tracks undetected for too long
+        del_tracks = []
+        for i, track in enumerate(self.tracks):
+            if (track.position_error() > self.max_position_error):
+                del_tracks.append(i)
 
-            if(assignment[i] != -1):
-                self.tracks[i].correct(detections[assignment[i]])
+        for id in np.flipud(del_tracks):  # only when skipped frame exceeds max
+            del self.tracks[id]
 
-            if(len(self.tracks[i].trace) > self.max_trace_length):
-                del self.tracks[i].trace[0]
+        # Update lastResults and tracks trace
+        for track in self.tracks:
+            if(len(track.trace) > self.max_trace_length):
+                del track.trace[0]
 
-            self.tracks[i].trace.append(self.tracks[i].position())
+            track.trace.append(track.position())

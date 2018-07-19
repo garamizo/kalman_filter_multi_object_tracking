@@ -32,12 +32,16 @@ def main():
 
     # Create opencv video capture object
     cap = cv2.VideoCapture('data/TrackingBugs.mp4')
+    """
+    Resolution: 596 x 336
+    Frame rate: 30 fps
+    """
 
     # Create Object Detector
     detector = Detectors()
 
     # Create Object Tracker
-    tracker = Tracker(20, 50, 10, 100)
+    tracker = Tracker(30, 30, 10, 100)
 
     # Variables initialization
     skip_frame_count = 0
@@ -71,6 +75,10 @@ def main():
             # For identified object tracks draw tracking line
             # Use various colors to indicate different track_id
             for i in range(len(tracker.tracks)):
+                position = tracker.tracks[i].position()
+                error = tracker.tracks[i].position_error()
+                cv2.circle(frame, (position[0], position[1]), error, (200, 200, 200), 2)
+
                 if (len(tracker.tracks[i].trace) > 1):
                     for j in range(len(tracker.tracks[i].trace)-1):
                         # Draw trace line
@@ -89,7 +97,7 @@ def main():
         cv2.imshow('Original', orig_frame)
 
         # Slower the FPS
-        cv2.waitKey(50)
+        cv2.waitKey(1)
 
         # Check for key strokes
         k = cv2.waitKey(50) & 0xff
